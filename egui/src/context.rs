@@ -14,10 +14,10 @@ use epaint::{stats::*, text::Fonts, *};
 
 // ----------------------------------------------------------------------------
 
-/// A wrapper around [`Arc`](std::sync::Arc)`<`[`Context`]`>`.
+/// A wrapper around [`Rc`](std::rc::Rc)`<`[`RefCell`](std::cell::RefCell)`<[`Context`]`>>`.
 /// This is how you will normally create and access a [`Context`].
 ///
-/// Almost all methods are marked `&self`, `CtxRef` has interior mutability (protected by mutexes).
+/// Almost all methods are marked `&self`, `CtxRef` has interior mutability (protected by RefCell).
 ///
 /// [`CtxRef`] is cheap to clone, and any clones refers to the same mutable data.
 ///
