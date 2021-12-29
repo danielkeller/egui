@@ -372,23 +372,24 @@ impl CtxRef {
 
     /// Not valid until first call to [`CtxRef::run()`].
     /// That's because since we don't know the proper `pixels_per_point` until then.
-    pub fn fonts(&self) -> Ref<'_, Fonts> {
-        Ref::map(self.borrow(), |c| {
+    pub fn fonts(&self) -> RefMut<'_, Fonts> {
+        RefMut::map(self.borrow_mut(), |c| {
             c.fonts
-                .as_ref()
+                .as_mut()
                 .expect("No fonts available until first call to CtxRef::run()")
         })
-    }
-
-    fn fonts_mut(&self) -> RefMut<'_, Option<Fonts>> {
-        RefMut::map(self.borrow_mut(), |c| &mut c.fonts)
     }
 
     /// The egui texture, containing font characters etc.
     /// Not valid until first call to [`CtxRef::run()`].
     /// That's because since we don't know the proper `pixels_per_point` until then.
-    pub fn texture(&self) -> Arc<epaint::Texture> {
-        self.fonts().texture()
+    pub fn texture(&self) -> Ref<'_, epaint::Texture> {
+        Ref::map(self.borrow(), |c| {
+            c.fonts
+                .as_ref()
+                .expect("No fonts available until first call to CtxRef::run()")
+                .texture()
+        })
     }
 
     /// Tell `egui` which fonts to use.
@@ -398,7 +399,7 @@ impl CtxRef {
     ///
     /// The new fonts will become active at the start of the next frame.
     pub fn set_fonts(&self, font_definitions: FontDefinitions) {
-        if let Some(current_fonts) = &*self.fonts_mut() {
+        if let Some(current_fonts) = &self.borrow().fonts {
             // NOTE: this comparison is expensive since it checks TTF data for equality
             if current_fonts.definitions() == &font_definitions {
                 return; // no change - save us from reloading font textures

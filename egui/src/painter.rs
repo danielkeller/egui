@@ -1,4 +1,4 @@
-use std::cell::{Ref, RefMut};
+use std::cell::RefMut;
 
 use crate::{
     emath::{Align2, Pos2, Rect, Vec2},
@@ -93,7 +93,7 @@ impl Painter {
 
     /// Available fonts.
     #[inline(always)]
-    pub fn fonts(&self) -> Ref<'_, Fonts> {
+    pub fn fonts(&self) -> RefMut<'_, Fonts> {
         self.ctx.fonts()
     }
 

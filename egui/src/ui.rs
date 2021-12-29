@@ -333,7 +333,7 @@ impl Ui {
     /// The `Fonts` of the `Context` associated with the `Ui`.
     /// Equivalent to `.ctx().fonts()`.
     #[inline]
-    pub fn fonts(&self) -> Ref<'_, Fonts> {
+    pub fn fonts(&self) -> RefMut<'_, Fonts> {
         self.ctx().fonts()
     }
 

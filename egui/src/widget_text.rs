@@ -1,4 +1,4 @@
-use std::{sync::Arc};
+use std::sync::Arc;
 
 use crate::{
     style::WidgetVisuals, text::LayoutJob, Align, Color32, CtxRef, Galley, Pos2, Style, TextStyle,
@@ -561,7 +561,7 @@ pub struct WidgetTextJob {
 }
 
 impl WidgetTextJob {
-    pub fn into_galley(self, fonts: &crate::text::Fonts) -> WidgetTextGalley {
+    pub fn into_galley(self, fonts: &mut crate::text::Fonts) -> WidgetTextGalley {
         let Self { job, job_has_color } = self;
         let galley = fonts.layout_job(job);
         WidgetTextGalley {

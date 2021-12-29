@@ -1,12 +1,7 @@
-use crate::{
-    mutex::{Mutex, RwLock},
-    text::TextStyle,
-    TextureAtlas,
-};
+use crate::{text::TextStyle, TextureAtlas};
 use ahash::AHashMap;
 use emath::{vec2, Vec2};
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
 // ----------------------------------------------------------------------------
 
@@ -57,6 +52,7 @@ impl Default for GlyphInfo {
 
 /// A specific font with a size.
 /// The interface uses points as the unit for everything.
+#[derive(Clone)]
 pub struct FontImpl {
     ab_glyph_font: ab_glyph::FontArc,
     /// Maximum character height
@@ -65,13 +61,11 @@ pub struct FontImpl {
     // move each character by this much (hack)
     y_offset: f32,
     pixels_per_point: f32,
-    glyph_info_cache: RwLock<AHashMap<char, GlyphInfo>>, // TODO: standard Mutex
-    atlas: Arc<Mutex<TextureAtlas>>,
+    glyph_info_cache: AHashMap<char, GlyphInfo>,
 }
 
 impl FontImpl {
     pub fn new(
-        atlas: Arc<Mutex<TextureAtlas>>,
         pixels_per_point: f32,
         ab_glyph_font: ab_glyph::FontArc,
         scale_in_points: f32,
@@ -104,7 +98,6 @@ impl FontImpl {
             y_offset,
             pixels_per_point,
             glyph_info_cache: Default::default(),
-            atlas,
         }
     }
 
@@ -127,9 +120,9 @@ impl FontImpl {
     }
 
     /// `\n` will result in `None`
-    fn glyph_info(&self, c: char) -> Option<GlyphInfo> {
+    fn glyph_info(&mut self, atlas: &mut TextureAtlas, c: char) -> Option<GlyphInfo> {
         {
-            if let Some(glyph_info) = self.glyph_info_cache.read().get(&c) {
+            if let Some(glyph_info) = self.glyph_info_cache.get(&c) {
                 return Some(*glyph_info);
             }
         }
@@ -139,12 +132,12 @@ impl FontImpl {
         let glyph_id = self.ab_glyph_font.glyph_id(c);
 
         if c == '\t' {
-            if let Some(space) = self.glyph_info(' ') {
+            if let Some(space) = self.glyph_info(atlas, ' ') {
                 let glyph_info = GlyphInfo {
                     advance_width: crate::text::TAB_SIZE as f32 * space.advance_width,
                     ..GlyphInfo::default()
                 };
-                self.glyph_info_cache.write().insert(c, glyph_info);
+                self.glyph_info_cache.insert(c, glyph_info);
                 return Some(glyph_info);
             }
         }
@@ -153,14 +146,14 @@ impl FontImpl {
             if invisible_char(c) {
                 // hack
                 let glyph_info = GlyphInfo::default();
-                self.glyph_info_cache.write().insert(c, glyph_info);
+                self.glyph_info_cache.insert(c, glyph_info);
                 Some(glyph_info)
             } else {
                 None
             }
         } else {
             let glyph_info = allocate_glyph(
-                &mut self.atlas.lock(),
+                atlas,
                 &self.ab_glyph_font,
                 glyph_id,
                 self.scale_in_pixels,
@@ -168,7 +161,7 @@ impl FontImpl {
                 self.pixels_per_point,
             );
 
-            self.glyph_info_cache.write().insert(c, glyph_info);
+            self.glyph_info_cache.insert(c, glyph_info);
             Some(glyph_info)
         }
     }
@@ -204,22 +197,22 @@ type FontIndex = usize;
 /// Wrapper over multiple `FontImpl` (e.g. a primary + fallbacks for emojis)
 pub struct Font {
     text_style: TextStyle,
-    fonts: Vec<Arc<FontImpl>>,
+    fonts: Vec<FontImpl>,
     /// Lazily calculated.
-    characters: RwLock<Option<std::collections::BTreeSet<char>>>,
+    characters: Option<std::collections::BTreeSet<char>>,
     replacement_glyph: (FontIndex, GlyphInfo),
     pixels_per_point: f32,
     row_height: f32,
-    glyph_info_cache: RwLock<AHashMap<char, (FontIndex, GlyphInfo)>>,
+    glyph_info_cache: AHashMap<char, (FontIndex, GlyphInfo)>,
 }
 
 impl Font {
-    pub fn new(text_style: TextStyle, fonts: Vec<Arc<FontImpl>>) -> Self {
+    pub fn new(text_style: TextStyle, atlas: &mut TextureAtlas, fonts: Vec<FontImpl>) -> Self {
         if fonts.is_empty() {
             return Self {
                 text_style,
                 fonts,
-                characters: RwLock::new(None),
+                characters: None,
                 replacement_glyph: Default::default(),
                 pixels_per_point: 1.0,
                 row_height: 0.0,
@@ -233,7 +226,7 @@ impl Font {
         let mut slf = Self {
             text_style,
             fonts,
-            characters: RwLock::new(None),
+            characters: None,
             replacement_glyph: Default::default(),
             pixels_per_point,
             row_height,
@@ -244,8 +237,8 @@ impl Font {
         const FALLBACK_REPLACEMENT_CHAR: char = '?'; // fallback for the fallback
 
         let replacement_glyph = slf
-            .glyph_info_no_cache_or_fallback(PRIMARY_REPLACEMENT_CHAR)
-            .or_else(|| slf.glyph_info_no_cache_or_fallback(FALLBACK_REPLACEMENT_CHAR))
+            .glyph_info_no_cache_or_fallback(atlas, PRIMARY_REPLACEMENT_CHAR)
+            .or_else(|| slf.glyph_info_no_cache_or_fallback(atlas, FALLBACK_REPLACEMENT_CHAR))
             .unwrap_or_else(|| {
                 panic!(
                     "Failed to find replacement characters {:?} or {:?}",
@@ -258,24 +251,24 @@ impl Font {
         const FIRST_ASCII: usize = 32; // 32 == space
         const LAST_ASCII: usize = 126;
         for c in (FIRST_ASCII..=LAST_ASCII).map(|c| c as u8 as char) {
-            slf.glyph_info(c);
+            slf.glyph_info(atlas, c);
         }
-        slf.glyph_info('°');
-        slf.glyph_info(crate::text::PASSWORD_REPLACEMENT_CHAR); // password replacement character
+        slf.glyph_info(atlas, '°');
+        slf.glyph_info(atlas, crate::text::PASSWORD_REPLACEMENT_CHAR); // password replacement character
 
         slf
     }
 
     /// All supported characters
-    pub fn characters(&self) -> BTreeSet<char> {
-        if self.characters.read().is_none() {
+    pub fn characters(&mut self) -> BTreeSet<char> {
+        if self.characters.is_none() {
             let mut characters = BTreeSet::new();
             for font in &self.fonts {
                 characters.extend(font.characters());
             }
-            self.characters.write().replace(characters);
+            self.characters.replace(characters);
         }
-        self.characters.read().clone().unwrap()
+        self.characters.clone().unwrap()
     }
 
     #[inline(always)]
@@ -296,49 +289,52 @@ impl Font {
 
     pub fn uv_rect(&self, c: char) -> UvRect {
         self.glyph_info_cache
-            .read()
             .get(&c)
             .map(|gi| gi.1.uv_rect)
             .unwrap_or_default()
     }
 
     /// Width of this character in points.
-    pub fn glyph_width(&self, c: char) -> f32 {
-        self.glyph_info(c).1.advance_width
+    pub(crate) fn glyph_width(&mut self, atlas: &mut TextureAtlas, c: char) -> f32 {
+        self.glyph_info(atlas, c).1.advance_width
     }
 
     /// `\n` will (intentionally) show up as the replacement character.
-    fn glyph_info(&self, c: char) -> (FontIndex, GlyphInfo) {
+    fn glyph_info(&mut self, atlas: &mut TextureAtlas, c: char) -> (FontIndex, GlyphInfo) {
         {
-            if let Some(font_index_glyph_info) = self.glyph_info_cache.read().get(&c) {
+            if let Some(font_index_glyph_info) = self.glyph_info_cache.get(&c) {
                 return *font_index_glyph_info;
             }
         }
 
-        let font_index_glyph_info = self.glyph_info_no_cache_or_fallback(c);
+        let font_index_glyph_info = self.glyph_info_no_cache_or_fallback(atlas, c);
         let font_index_glyph_info = font_index_glyph_info.unwrap_or(self.replacement_glyph);
-        self.glyph_info_cache
-            .write()
-            .insert(c, font_index_glyph_info);
+        self.glyph_info_cache.insert(c, font_index_glyph_info);
         font_index_glyph_info
     }
 
     #[inline]
-    pub(crate) fn glyph_info_and_font_impl(&self, c: char) -> (Option<&FontImpl>, GlyphInfo) {
+    pub(crate) fn glyph_info_and_font_impl(
+        &mut self,
+        atlas: &mut TextureAtlas,
+        c: char,
+    ) -> (Option<&FontImpl>, GlyphInfo) {
         if self.fonts.is_empty() {
             return (None, self.replacement_glyph.1);
         }
-        let (font_index, glyph_info) = self.glyph_info(c);
+        let (font_index, glyph_info) = self.glyph_info(atlas, c);
         let font_impl = &self.fonts[font_index];
         (Some(font_impl), glyph_info)
     }
 
-    fn glyph_info_no_cache_or_fallback(&self, c: char) -> Option<(FontIndex, GlyphInfo)> {
-        for (font_index, font_impl) in self.fonts.iter().enumerate() {
-            if let Some(glyph_info) = font_impl.glyph_info(c) {
-                self.glyph_info_cache
-                    .write()
-                    .insert(c, (font_index, glyph_info));
+    fn glyph_info_no_cache_or_fallback(
+        &mut self,
+        atlas: &mut TextureAtlas,
+        c: char,
+    ) -> Option<(FontIndex, GlyphInfo)> {
+        for (font_index, font_impl) in self.fonts.iter_mut().enumerate() {
+            if let Some(glyph_info) = font_impl.glyph_info(atlas, c) {
+                self.glyph_info_cache.insert(c, (font_index, glyph_info));
                 return Some((font_index, glyph_info));
             }
         }

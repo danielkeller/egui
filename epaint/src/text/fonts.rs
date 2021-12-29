@@ -1,7 +1,6 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
-    mutex::Mutex,
     text::{
         font::{Font, FontImpl},
         Galley, LayoutJob,
@@ -231,13 +230,10 @@ impl Default for FontDefinitions {
 pub struct Fonts {
     pixels_per_point: f32,
     definitions: FontDefinitions,
-    fonts: BTreeMap<TextStyle, Font>,
-    atlas: Arc<Mutex<TextureAtlas>>,
-    /// Copy of the texture in the texture atlas.
-    /// This is so we can return a reference to it (the texture atlas is behind a lock).
-    buffered_texture: Mutex<Arc<Texture>>,
+    pub(crate) fonts: BTreeMap<TextStyle, Font>,
+    pub(crate) atlas: TextureAtlas,
 
-    galley_cache: Mutex<GalleyCache>,
+    galley_cache: GalleyCache,
 }
 
 impl Fonts {
@@ -261,9 +257,7 @@ impl Fonts {
             atlas.texture_mut()[pos] = 255;
         }
 
-        let atlas = Arc::new(Mutex::new(atlas));
-
-        let mut font_impl_cache = FontImplCache::new(atlas.clone(), pixels_per_point, &definitions);
+        let mut font_impl_cache = FontImplCache::new(pixels_per_point, &definitions);
 
         let fonts = definitions
             .family_and_size
@@ -273,17 +267,16 @@ impl Fonts {
                 let fonts = fonts.unwrap_or_else(|| {
                     panic!("FontFamily::{:?} is not bound to any fonts", family)
                 });
-                let fonts: Vec<Arc<FontImpl>> = fonts
+                let fonts: Vec<FontImpl> = fonts
                     .iter()
                     .map(|font_name| font_impl_cache.font_impl(font_name, scale_in_points))
                     .collect();
 
-                (text_style, Font::new(text_style, fonts))
+                (text_style, Font::new(text_style, &mut atlas, fonts))
             })
             .collect();
 
         {
-            let mut atlas = atlas.lock();
             let texture = atlas.texture_mut();
             // Make sure we seed the texture version with something unique based on the default characters:
             texture.version = crate::util::hash(&texture.pixels);
@@ -294,7 +287,7 @@ impl Fonts {
             definitions,
             fonts,
             atlas,
-            buffered_texture: Default::default(), //atlas.lock().texture().clone();
+            // buffered_texture: Default::default(), //atlas.lock().texture().clone();
             galley_cache: Default::default(),
         }
     }
@@ -319,19 +312,16 @@ impl Fonts {
     }
 
     /// Call each frame to get the latest available font texture data.
-    pub fn texture(&self) -> Arc<Texture> {
-        let atlas = self.atlas.lock();
-        let mut buffered_texture = self.buffered_texture.lock();
-        if buffered_texture.version != atlas.texture().version {
-            *buffered_texture = Arc::new(atlas.texture().clone());
-        }
-
-        buffered_texture.clone()
+    pub fn texture(&self) -> &Texture {
+        self.atlas.texture()
     }
 
     /// Width of this character in points.
-    pub fn glyph_width(&self, text_style: TextStyle, c: char) -> f32 {
-        self.fonts[&text_style].glyph_width(c)
+    pub fn glyph_width(&mut self, text_style: TextStyle, c: char) -> f32 {
+        self.fonts
+            .get_mut(&text_style)
+            .unwrap()
+            .glyph_width(&mut self.atlas, c)
     }
 
     /// Height of one row of text. In points
@@ -345,15 +335,15 @@ impl Fonts {
     /// [`Self::layout_delayed_color`].
     ///
     /// The implementation uses memoization so repeated calls are cheap.
-    pub fn layout_job(&self, job: LayoutJob) -> Arc<Galley> {
-        self.galley_cache.lock().layout(self, job)
+    pub fn layout_job(&mut self, job: LayoutJob) -> Arc<Galley> {
+        self.layout_with_cache(job)
     }
 
     /// Will wrap text at the given width and line break at `\n`.
     ///
     /// The implementation uses memoization so repeated calls are cheap.
     pub fn layout(
-        &self,
+        &mut self,
         text: String,
         text_style: TextStyle,
         color: crate::Color32,
@@ -367,7 +357,7 @@ impl Fonts {
     ///
     /// The implementation uses memoization so repeated calls are cheap.
     pub fn layout_no_wrap(
-        &self,
+        &mut self,
         text: String,
         text_style: TextStyle,
         color: crate::Color32,
@@ -380,7 +370,7 @@ impl Fonts {
     ///
     /// The implementation uses memoization so repeated calls are cheap.
     pub fn layout_delayed_color(
-        &self,
+        &mut self,
         text: String,
         text_style: TextStyle,
         wrap_width: f32,
@@ -394,12 +384,12 @@ impl Fonts {
     }
 
     pub fn num_galleys_in_cache(&self) -> usize {
-        self.galley_cache.lock().num_galleys_in_cache()
+        self.galley_cache.num_galleys_in_cache()
     }
 
     /// Must be called once per frame to clear the [`Galley`] cache.
-    pub fn end_frame(&self) {
-        self.galley_cache.lock().end_frame();
+    pub fn end_frame(&mut self) {
+        self.galley_cache.end_frame();
     }
 }
 
@@ -409,6 +399,15 @@ impl std::ops::Index<TextStyle> for Fonts {
     #[inline(always)]
     fn index(&self, text_style: TextStyle) -> &Font {
         &self.fonts[&text_style]
+    }
+}
+
+impl std::ops::IndexMut<TextStyle> for Fonts {
+    #[inline(always)]
+    fn index_mut(&mut self, text_style: TextStyle) -> &mut Font {
+        self.fonts
+            .get_mut(&text_style)
+            .expect("no entry found for key")
     }
 }
 
@@ -427,28 +426,31 @@ struct GalleyCache {
     cache: nohash_hasher::IntMap<u64, CachedGalley>,
 }
 
-impl GalleyCache {
-    fn layout(&mut self, fonts: &Fonts, job: LayoutJob) -> Arc<Galley> {
+impl Fonts {
+    fn layout_with_cache(&mut self, job: LayoutJob) -> Arc<Galley> {
         let hash = crate::util::hash(&job); // TODO: even faster hasher?
 
-        match self.cache.entry(hash) {
-            std::collections::hash_map::Entry::Occupied(entry) => {
-                let cached = entry.into_mut();
-                cached.last_used = self.generation;
+        match self.galley_cache.cache.get_mut(&hash) {
+            Some(cached) => {
+                cached.last_used = self.galley_cache.generation;
                 cached.galley.clone()
             }
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                let galley = super::layout(fonts, job.into());
+            None => {
+                let galley = super::layout(self, job.into());
                 let galley = Arc::new(galley);
-                entry.insert(CachedGalley {
-                    last_used: self.generation,
-                    galley: galley.clone(),
-                });
+                self.galley_cache.cache.insert(
+                    hash,
+                    CachedGalley {
+                        last_used: self.galley_cache.generation,
+                        galley: galley.clone(),
+                    },
+                );
                 galley
             }
         }
     }
-
+}
+impl GalleyCache {
     pub fn num_galleys_in_cache(&self) -> usize {
         self.cache.len()
     }
@@ -466,21 +468,16 @@ impl GalleyCache {
 // ----------------------------------------------------------------------------
 
 struct FontImplCache {
-    atlas: Arc<Mutex<TextureAtlas>>,
     pixels_per_point: f32,
     ab_glyph_fonts: BTreeMap<String, ab_glyph::FontArc>,
 
     /// Map font names and size to the cached `FontImpl`.
     /// Can't have f32 in a HashMap or BTreeMap, so let's do a linear search
-    cache: Vec<(String, f32, Arc<FontImpl>)>,
+    cache: Vec<(String, f32, FontImpl)>,
 }
 
 impl FontImplCache {
-    pub fn new(
-        atlas: Arc<Mutex<TextureAtlas>>,
-        pixels_per_point: f32,
-        definitions: &super::FontDefinitions,
-    ) -> Self {
+    pub fn new(pixels_per_point: f32, definitions: &super::FontDefinitions) -> Self {
         let ab_glyph_fonts = definitions
             .font_data
             .iter()
@@ -488,7 +485,6 @@ impl FontImplCache {
             .collect();
 
         Self {
-            atlas,
             pixels_per_point,
             ab_glyph_fonts,
             cache: Default::default(),
@@ -502,7 +498,7 @@ impl FontImplCache {
             .clone()
     }
 
-    pub fn font_impl(&mut self, font_name: &str, scale_in_points: f32) -> Arc<FontImpl> {
+    pub fn font_impl(&mut self, font_name: &str, scale_in_points: f32) -> FontImpl {
         for entry in &self.cache {
             if (entry.0.as_str(), entry.1) == (font_name, scale_in_points) {
                 return entry.2.clone();
@@ -522,13 +518,12 @@ impl FontImplCache {
             scale_in_points
         };
 
-        let font_impl = Arc::new(FontImpl::new(
-            self.atlas.clone(),
+        let font_impl = FontImpl::new(
             self.pixels_per_point,
             self.ab_glyph_font(font_name),
             scale_in_points,
             y_offset,
-        ));
+        );
         self.cache
             .push((font_name.to_owned(), scale_in_points, font_impl.clone()));
         font_impl

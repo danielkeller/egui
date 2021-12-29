@@ -14,6 +14,7 @@ pub(crate) struct Region {
     ///
     /// The bounding box of all child widgets, but not necessarily a tight bounding box
     /// since `Ui` can start with a non-zero min_rect size.
+    /// foo
     pub min_rect: Rect,
 
     /// The maximum size of this `Ui`. This is a *soft max*

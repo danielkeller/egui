@@ -19,7 +19,7 @@ struct Paragraph {
 ///
 /// In most cases you should use [`Fonts::layout_job`] instead
 /// since that memoizes the input, making subsequent layouting of the same text much faster.
-pub fn layout(fonts: &Fonts, job: Arc<LayoutJob>) -> Galley {
+pub fn layout(fonts: &mut Fonts, job: Arc<LayoutJob>) -> Galley {
     let mut paragraphs = vec![Paragraph::default()];
     for (section_index, section) in job.sections.iter().enumerate() {
         layout_section(fonts, &job, section_index as u32, section, &mut paragraphs);
@@ -42,7 +42,7 @@ pub fn layout(fonts: &Fonts, job: Arc<LayoutJob>) -> Galley {
 }
 
 fn layout_section(
-    fonts: &Fonts,
+    fonts: &mut Fonts,
     job: &LayoutJob,
     section_index: u32,
     section: &LayoutSection,
@@ -53,7 +53,7 @@ fn layout_section(
         byte_range,
         format,
     } = section;
-    let font = &fonts[format.style];
+    let font = &mut fonts.fonts.get_mut(&format.style).unwrap();
     let font_height = font.row_height();
 
     let mut paragraph = out_paragraphs.last_mut().unwrap();
@@ -71,7 +71,7 @@ fn layout_section(
             paragraph = out_paragraphs.last_mut().unwrap();
             paragraph.empty_paragraph_height = font_height; // TODO: replace this hack with actually including `\n` in the glyphs?
         } else {
-            let (font_impl, glyph_info) = font.glyph_info_and_font_impl(chr);
+            let (font_impl, glyph_info) = font.glyph_info_and_font_impl(&mut fonts.atlas, chr);
             if let Some(font_impl) = font_impl {
                 if let Some(last_glyph_id) = last_glyph_id {
                     paragraph.cursor_x += font_impl.pair_kerning(last_glyph_id, glyph_info.id);
