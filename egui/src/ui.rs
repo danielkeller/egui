@@ -770,36 +770,48 @@ impl Ui {
         layout: Layout,
         add_contents: impl FnOnce(&mut Self) -> R,
     ) -> InnerResponse<R> {
-        self.allocate_ui_with_layout_dyn(desired_size, layout, Box::new(add_contents))
+        let mut child_ui = self.begin_allocate_ui(desired_size, layout);
+        let inner = add_contents(&mut child_ui);
+        let response = child_ui.end_child_ui(self);
+        InnerResponse { inner, response }
     }
 
-    fn allocate_ui_with_layout_dyn<'c, R>(
-        &mut self,
-        desired_size: Vec2,
-        layout: Layout,
-        add_contents: Box<dyn FnOnce(&mut Self) -> R + 'c>,
-    ) -> InnerResponse<R> {
+    /// Allocated the given space and then adds content to that space.
+    /// If the contents overflow, more space will be allocated.
+    /// When finished, call [`Self::end_child_ui`] and the amount of space actually
+    /// used (`min_rect`) will be allocated. So you can request a lot of space
+    /// nd then use less.
+    pub fn begin_allocate_ui(&mut self, desired_size: Vec2, layout: Layout) -> Self {
         crate::egui_assert!(desired_size.x >= 0.0 && desired_size.y >= 0.0);
         let item_spacing = self.spacing().item_spacing;
         let frame_rect = self.placer.next_space(desired_size, item_spacing);
         let child_rect = self.placer.justify_and_align(frame_rect, desired_size);
 
-        let mut child_ui = self.child_ui(child_rect, layout);
-        let ret = add_contents(&mut child_ui);
-        let final_child_rect = child_ui.min_rect();
-
-        self.placer
-            .advance_after_rects(final_child_rect, final_child_rect, item_spacing);
-
-        if self.style().debug.debug_on_hover && self.rect_contains_pointer(final_child_rect) {
+        if self.style().debug.debug_on_hover && self.rect_contains_pointer(frame_rect) {
             let painter = self.ctx().debug_painter();
             painter.rect_stroke(frame_rect, 4.0, (1.0, Color32::LIGHT_BLUE));
-            painter.rect_stroke(final_child_rect, 4.0, (1.0, Color32::LIGHT_BLUE));
-            self.placer.debug_paint_cursor(&painter, "next");
         }
 
-        let response = self.interact(final_child_rect, child_ui.id, Sense::hover());
-        InnerResponse::new(ret, response)
+        self.child_ui(child_rect, layout)
+    }
+
+    /// End this child UI and allocate space in the `parent` to fit the contents of
+    /// `self`.
+    pub fn end_child_ui(self, parent: &mut Ui) -> Response {
+        let final_child_rect = self.min_rect();
+        let item_spacing = parent.spacing().item_spacing;
+
+        parent
+            .placer
+            .advance_after_rects(final_child_rect, final_child_rect, item_spacing);
+
+        if parent.style().debug.debug_on_hover && parent.rect_contains_pointer(final_child_rect) {
+            let painter = parent.ctx().debug_painter();
+            painter.rect_stroke(final_child_rect, 4.0, (1.0, Color32::LIGHT_BLUE));
+            parent.placer.debug_paint_cursor(&painter, "next");
+        }
+
+        parent.interact(final_child_rect, self.id, Sense::hover())
     }
 
     /// Allocated the given rectangle and then adds content to that rectangle.
@@ -1506,7 +1518,10 @@ impl Ui {
     /// See also [`Self::with_layout`] for more options.
     #[inline]
     pub fn horizontal<R>(&mut self, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
-        self.horizontal_with_main_wrap_dyn(false, Box::new(add_contents))
+        let mut child_ui = self.begin_horizontal(false);
+        let inner = add_contents(&mut child_ui);
+        let response = child_ui.end_child_ui(self);
+        InnerResponse { inner, response }
     }
 
     /// Like [`Self::horizontal`], but aligns content with top.
@@ -1521,7 +1536,7 @@ impl Ui {
             Layout::left_to_right()
         }
         .with_cross_align(Align::Min);
-        self.allocate_ui_with_layout_dyn(initial_size, layout, Box::new(add_contents))
+        self.allocate_ui_with_layout(initial_size, layout, Box::new(add_contents))
     }
 
     /// Start a ui with horizontal layout that wraps to a new row
@@ -1539,18 +1554,19 @@ impl Ui {
     /// It also contains the `Rect` used by the horizontal layout.
     ///
     /// See also [`Self::with_layout`] for more options.
+    #[inline]
     pub fn horizontal_wrapped<R>(
         &mut self,
         add_contents: impl FnOnce(&mut Ui) -> R,
     ) -> InnerResponse<R> {
-        self.horizontal_with_main_wrap_dyn(true, Box::new(add_contents))
+        let mut child_ui = self.begin_horizontal(true);
+        let inner = add_contents(&mut child_ui);
+        let response = child_ui.end_child_ui(self);
+        InnerResponse { inner, response }
     }
 
-    fn horizontal_with_main_wrap_dyn<'c, R>(
-        &mut self,
-        main_wrap: bool,
-        add_contents: Box<dyn FnOnce(&mut Ui) -> R + 'c>,
-    ) -> InnerResponse<R> {
+    /// Begins a horizontal ui. Call [`Self::end_child_ui`] after filling it.
+    pub fn begin_horizontal(&mut self, main_wrap: bool) -> Self {
         let initial_size = vec2(
             self.available_size_before_wrap().x,
             self.spacing().interact_size.y, // Assume there will be something interactive on the horizontal layout
@@ -1562,8 +1578,7 @@ impl Ui {
             Layout::left_to_right()
         }
         .with_main_wrap(main_wrap);
-
-        self.allocate_ui_with_layout_dyn(initial_size, layout, add_contents)
+        self.begin_allocate_ui(initial_size, layout)
     }
 
     /// Start a ui with vertical layout.
@@ -1581,7 +1596,7 @@ impl Ui {
     /// See also [`Self::with_layout`] for more options.
     #[inline]
     pub fn vertical<R>(&mut self, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
-        self.with_layout_dyn(Layout::top_down(Align::Min), Box::new(add_contents))
+        self.with_layout(Layout::top_down(Align::Min), add_contents)
     }
 
     /// Start a ui with vertical layout.
@@ -1600,7 +1615,7 @@ impl Ui {
         &mut self,
         add_contents: impl FnOnce(&mut Ui) -> R,
     ) -> InnerResponse<R> {
-        self.with_layout_dyn(Layout::top_down(Align::Center), Box::new(add_contents))
+        self.with_layout(Layout::top_down(Align::Center), add_contents)
     }
 
     /// Start a ui with vertical layout.
@@ -1614,13 +1629,14 @@ impl Ui {
     /// });
     /// # });
     /// ```
+    #[inline]
     pub fn vertical_centered_justified<R>(
         &mut self,
         add_contents: impl FnOnce(&mut Ui) -> R,
     ) -> InnerResponse<R> {
-        self.with_layout_dyn(
+        self.with_layout(
             Layout::top_down(Align::Center).with_cross_justify(true),
-            Box::new(add_contents),
+            add_contents,
         )
     }
 
@@ -1643,37 +1659,25 @@ impl Ui {
         layout: Layout,
         add_contents: impl FnOnce(&mut Self) -> R,
     ) -> InnerResponse<R> {
-        self.with_layout_dyn(layout, Box::new(add_contents))
+        let mut child_ui = self.begin_with_layout(layout);
+        let inner = add_contents(&mut child_ui);
+        let response = child_ui.end_child_ui(self);
+        InnerResponse { inner, response }
     }
 
-    fn with_layout_dyn<'c, R>(
-        &mut self,
-        layout: Layout,
-        add_contents: Box<dyn FnOnce(&mut Self) -> R + 'c>,
-    ) -> InnerResponse<R> {
-        let mut child_ui = self.child_ui(self.available_rect_before_wrap(), layout);
-        let inner = add_contents(&mut child_ui);
-        let rect = child_ui.min_rect();
-        let item_spacing = self.spacing().item_spacing;
-        self.placer.advance_after_rects(rect, rect, item_spacing);
-
-        if self.style().debug.debug_on_hover && self.rect_contains_pointer(rect) {
-            let painter = self.ctx().debug_painter();
-            painter.rect_stroke(rect, 4.0, (1.0, Color32::LIGHT_BLUE));
-            self.placer.debug_paint_cursor(&painter, "next");
-        }
-
-        InnerResponse::new(inner, self.interact(rect, child_ui.id, Sense::hover()))
+    pub fn begin_with_layout(&mut self, layout: Layout) -> Self {
+        self.child_ui(self.available_rect_before_wrap(), layout)
     }
 
     /// This will make the next added widget centered and justified in the available space.
+    #[inline]
     pub fn centered_and_justified<R>(
         &mut self,
         add_contents: impl FnOnce(&mut Self) -> R,
     ) -> InnerResponse<R> {
-        self.with_layout_dyn(
+        self.with_layout(
             Layout::centered_and_justified(Direction::TopDown),
-            Box::new(add_contents),
+            add_contents,
         )
     }
 
