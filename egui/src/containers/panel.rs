@@ -174,7 +174,7 @@ impl SidePanel {
     }
 
     /// Show the panel inside a `Ui`.
-    fn begin_inside(self, ui: &mut Ui) -> Prepared {
+    pub fn begin_inside(self, ui: &mut Ui) -> Prepared {
         let Self {
             side,
             id,
