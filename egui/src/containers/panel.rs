@@ -269,9 +269,8 @@ impl Prepared {
             mut panel_ui,
             frame,
         } = self;
-
+        let initial_rect = panel_ui.max_rect();
         let response = frame.end(&mut panel_ui);
-
         let rect = response.rect;
 
         {
@@ -308,9 +307,16 @@ impl Prepared {
 
         if ui.layer_id() == LayerId::background() {
             // Top level panel
+
             match side {
-                Side::Left => ui.ctx().frame_state().allocate_left_panel(rect),
-                Side::Right => ui.ctx().frame_state().allocate_right_panel(rect),
+                Side::Left => ui
+                    .ctx()
+                    .frame_state()
+                    .allocate_left_panel(Rect::from_min_max(initial_rect.min, rect.max)),
+                Side::Right => ui
+                    .ctx()
+                    .frame_state()
+                    .allocate_right_panel(Rect::from_min_max(rect.min, initial_rect.max)),
             }
         }
 
