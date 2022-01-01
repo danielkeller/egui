@@ -151,6 +151,15 @@ impl SidePanel {
     }
 }
 
+pub struct Prepared {
+    side: Side,
+    id: Id,
+    resize_hover: bool,
+    is_resizing: bool,
+    panel_ui: Ui,
+    frame: frame::Prepared,
+}
+
 impl SidePanel {
     /// Show the panel inside a `Ui`.
     pub fn show_inside<R>(
@@ -158,15 +167,14 @@ impl SidePanel {
         ui: &mut Ui,
         add_contents: impl FnOnce(&mut Ui) -> R,
     ) -> InnerResponse<R> {
-        self.show_inside_dyn(ui, Box::new(add_contents))
+        let mut prepared = self.begin_inside(ui);
+        let inner = add_contents(prepared.ui());
+        let response = prepared.end(ui);
+        InnerResponse { inner, response }
     }
 
     /// Show the panel inside a `Ui`.
-    fn show_inside_dyn<'c, R>(
-        self,
-        ui: &mut Ui,
-        add_contents: Box<dyn FnOnce(&mut Ui) -> R + 'c>,
-    ) -> InnerResponse<R> {
+    fn begin_inside(self, ui: &mut Ui) -> Prepared {
         let Self {
             side,
             id,
@@ -230,13 +238,41 @@ impl SidePanel {
         let mut panel_ui = ui.child_ui_with_id_source(panel_rect, Layout::top_down(Align::Min), id);
         panel_ui.expand_to_include_rect(panel_rect);
         let frame = frame.unwrap_or_else(|| Frame::side_top_panel(ui.style()));
-        let inner_response = frame.show(&mut panel_ui, |ui| {
-            ui.set_min_height(ui.max_rect().height()); // Make sure the frame fills the full height
-            ui.set_min_width(*width_range.start());
-            add_contents(ui)
-        });
+        let mut frame = frame.begin(&mut panel_ui);
+        frame
+            .content_ui
+            .set_min_height(frame.content_ui.max_rect().height()); // Make sure the frame fills the full height
+        frame.content_ui.set_min_width(*width_range.start());
 
-        let rect = inner_response.response.rect;
+        return Prepared {
+            side,
+            id,
+            resize_hover,
+            is_resizing,
+            panel_ui,
+            frame,
+        };
+    }
+}
+
+impl Prepared {
+    pub fn ui(&mut self) -> &mut Ui {
+        &mut self.frame.content_ui
+    }
+
+    pub fn end(self, ui: &mut Ui) -> Response {
+        let Prepared {
+            side,
+            id,
+            resize_hover,
+            is_resizing,
+            mut panel_ui,
+            frame,
+        } = self;
+
+        let response = frame.end(&mut panel_ui);
+
+        let rect = response.rect;
 
         {
             let mut cursor = ui.cursor();
@@ -270,42 +306,35 @@ impl SidePanel {
                 .line_segment([top, bottom], stroke);
         }
 
-        inner_response
-    }
+        if ui.layer_id() == LayerId::background() {
+            // Top level panel
+            match side {
+                Side::Left => ui.ctx().frame_state().allocate_left_panel(rect),
+                Side::Right => ui.ctx().frame_state().allocate_right_panel(rect),
+            }
+        }
 
+        response
+    }
+}
+
+impl SidePanel {
     /// Show the panel at the top level.
     pub fn show<R>(
         self,
         ctx: &CtxRef,
         add_contents: impl FnOnce(&mut Ui) -> R,
     ) -> InnerResponse<R> {
-        self.show_dyn(ctx, Box::new(add_contents))
+        let mut panel_ui = self.top_level_ui(ctx);
+        let inner_response = self.show_inside(&mut panel_ui, add_contents);
+        inner_response
     }
 
-    /// Show the panel at the top level.
-    fn show_dyn<'c, R>(
-        self,
-        ctx: &CtxRef,
-        add_contents: Box<dyn FnOnce(&mut Ui) -> R + 'c>,
-    ) -> InnerResponse<R> {
+    pub fn top_level_ui(&self, ctx: &CtxRef) -> Ui {
         let layer_id = LayerId::background();
-        let side = self.side;
         let available_rect = ctx.available_rect();
         let clip_rect = ctx.input().screen_rect();
-        let mut panel_ui = Ui::new(ctx.clone(), layer_id, self.id, available_rect, clip_rect);
-
-        let inner_response = self.show_inside_dyn(&mut panel_ui, add_contents);
-        let rect = inner_response.response.rect;
-
-        match side {
-            Side::Left => ctx
-                .frame_state()
-                .allocate_left_panel(Rect::from_min_max(available_rect.min, rect.max)),
-            Side::Right => ctx
-                .frame_state()
-                .allocate_right_panel(Rect::from_min_max(rect.min, available_rect.max)),
-        }
-        inner_response
+        Ui::new(ctx.clone(), layer_id, self.id, available_rect, clip_rect)
     }
 }
 
